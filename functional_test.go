@@ -22,7 +22,7 @@ func mustSetupDB(t *testing.T, schema string, params map[string]string) *sql.DB 
 	db, err := sql.Open("mysql", dsn(schema, params))
 	require.NoError(t, err)
 	for _, ddl := range []string{
-		"drop table if exists test3, test33, test333, test4, test44, test5, test55, test6, test66, testx, testy, testz",
+		"drop table if exists test3, test33, test333, test4, test44, test5, test55, test6, test66, test7, test77, test8, test88, testx, testy, testz",
 		"create table test3(id int primary key clustered, a int, b int, unique key uk_expr((tidb_shard(a)),a))",
 		"create table test33(id int primary key clustered, a int, b int, unique key a(a))",
 		"create table test333(id int primary key clustered, a int, b int, unique key uk_expr((vitess_hash(a)%256),a))",
@@ -32,6 +32,16 @@ func mustSetupDB(t *testing.T, schema string, params map[string]string) *sql.DB 
 		"create table test55(id int primary key clustered, a int, b int, unique key a(a,b))",
 		"create table test6(id int primary key clustered, a int, b int, c int, unique key uk_expr((tidb_shard(a)), a))",
 		"create table test66(id int primary key clustered, a int, b int, c int, unique key a(a))",
+		"create table test7(id int, a int, b int, unique key uk_expr((tidb_shard(a)),a)) PARTITION BY RANGE (a) " +
+			"(PARTITION p0 VALUES LESS THAN (200), PARTITION p1 VALUES LESS THAN (400)," +
+			"PARTITION p2 VALUES LESS THAN (600), PARTITION p3 VALUES LESS THAN (800)," +
+			"PARTITION p4 VALUES LESS THAN MAXVALUE)",
+		"create table test77(id int, a int, b int, unique key uk_expr(a)) PARTITION BY RANGE (a) " +
+			"(PARTITION p0 VALUES LESS THAN (200), PARTITION p1 VALUES LESS THAN (400)," +
+			"PARTITION p2 VALUES LESS THAN (600), PARTITION p3 VALUES LESS THAN (800)," +
+			"PARTITION p4 VALUES LESS THAN MAXVALUE)",
+		"create table test8(id int, a int primary key clustered , b int, unique key uk_expr((tidb_shard(a)),a))",
+		"create table test88(id int, a int primary key clustered , b int, unique key uk_expr(a))",
 		"create table testx(id int primary key clustered, a int, b int, unique key a(a))",
 		"create table testy(id int primary key clustered, a int, b int, unique key uk_expr((tidb_shard(b)),a))",
 		"create table testz(id int primary key clustered, a int, b int, unique key uk_expr((tidb_shard(a+b)),a))",
@@ -41,7 +51,7 @@ func mustSetupDB(t *testing.T, schema string, params map[string]string) *sql.DB 
 	}
 
 	for _, table := range []string{
-		"test3", "test33", "test333", "test4", "test44", "test5", "test55", "testy", "testz",
+		"test3", "test33", "test333", "test4", "test44", "test5", "test55", "test7", "test77", "test8", "test88", "testy", "testz",
 	} {
 		bulk := sqlz.BulkInsert{
 			Prefix: "insert into " + table + " (id, a, b) values ",
@@ -279,6 +289,54 @@ func mustNotUsePPAndISAndLookUP(t *testing.T, rs *sqlz.ResultSet) {
 	}
 }
 
+const (
+	case25LookUPRowNum          = 1
+	case25ISRowNum              = 2
+	useShardIndexCase30ISRowNum = 1
+	useShardIndexCase30PPRowNum = 2
+)
+
+func mustUseISAndLookUP(t *testing.T, rs *sqlz.ResultSet) {
+	for i := 0; i < rs.NRows(); i++ {
+		raw, _ := rs.RawValue(i, 0)
+		if i == case25ISRowNum {
+			if !strings.Contains(string(raw), "IndexRangeScan") {
+				t.Log("must use IndexRangeScan, but got:\n" + dumpResultSet(rs))
+				t.FailNow()
+			}
+		}
+
+		if i == case25LookUPRowNum {
+			if !strings.Contains(string(raw), "IndexLookUp") {
+				t.Log("must use IndexLookUp, but got:\n" + dumpResultSet(rs))
+				t.FailNow()
+			}
+		}
+
+	}
+}
+
+func mustUseShardIndexAndPP(t *testing.T, rs *sqlz.ResultSet) {
+	for i := 0; i < rs.NRows(); i++ {
+		raw, _ := rs.RawValue(i, 0)
+		if i == useShardIndexCase30ISRowNum {
+			raw2, _ := rs.RawValue(i, 4)
+			if !strings.Contains(string(raw2), "tidb_shard") {
+				t.Log("must use Shard Index, but got:\n" + dumpResultSet(rs))
+				t.FailNow()
+			}
+		}
+
+		if i == useShardIndexCase30PPRowNum {
+			if !strings.Contains(string(raw), "Point_Get") {
+				t.Log("must use Point_Get, but got:\n" + dumpResultSet(rs))
+				t.FailNow()
+			}
+		}
+
+	}
+}
+
 type FunctionalTest struct {
 	Pool   sqlz.ConnPool
 	Query1 string
@@ -352,6 +410,7 @@ func (ft *FunctionalTest) Test(t *testing.T) {
 	if rs1.DataDigest(opts) != rs2.DataDigest(opts) {
 		t.Logf("results are different:\n> %s\n%s\n> %s\n%s\n",
 			ft.Query1, dumpResultSet(rs1), ft.Query2, dumpResultSet(rs2))
+		t.FailNow()
 	}
 	// t.Logf("> %s\n%s\n", ft.Query1, dumpResultSet(rs1)) // uncomment this for debug
 }
@@ -624,6 +683,42 @@ func TestFunctionalBasicQuery(t *testing.T) {
 			Query2:         "select * from test33 where a=100 and a = 100",
 			ExplainAssert1: mustUsePointPlan,
 		}).Test)
+		t.Run("#30", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "SELECT * FROM test8 WHERE a = 100",
+			Query2:         "SELECT * FROM test88 WHERE a = 100",
+			ExplainAssert1: mustUseShardIndexAndPP,
+		}).Test)
+		t.Run("#31", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "SELECT * FROM test3 WHERE a IN (100) OR a IN (200)",
+			Query2:         "SELECT * FROM test33 WHERE a IN (100) OR a IN (200)",
+			ExplainAssert1: mustUseBatchPointPlan,
+		}).Test)
+		t.Run("#32", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "SELECT * FROM test3 WHERE a IN (100, 300) OR a IN (200,400)",
+			Query2:         "SELECT * FROM test33 WHERE a IN (100, 300) OR a IN (200,400)",
+			ExplainAssert1: mustUseBatchPointPlan,
+		}).Test)
+		t.Run("#33", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "SELECT * FROM test3 WHERE a IN (100) OR a IN (200,400)",
+			Query2:         "SELECT * FROM test33 WHERE a IN (100) OR a IN (200,400)",
+			ExplainAssert1: mustUseBatchPointPlan,
+		}).Test)
+		t.Run("#34", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "SELECT * FROM test3 WHERE a IN (100) OR a IN (100,200,200)",
+			Query2:         "SELECT * FROM test33 WHERE a IN (100) OR a IN (100,200,200)",
+			ExplainAssert1: mustUseBatchPointPlan,
+		}).Test)
+		t.Run("#35", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "SELECT * FROM test3 WHERE a =100 OR a IN (200,300)",
+			Query2:         "SELECT * FROM test33 WHERE a =100 OR a IN (200,300)",
+			ExplainAssert1: mustUseBatchPointPlan,
+		}).Test)
 	})
 
 	t.Run("NotUseShardIndex", func(t *testing.T) {
@@ -741,7 +836,7 @@ func TestFunctionalBasicQuery(t *testing.T) {
 		t.Run("#20", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test3 where a > 90",
-			Query2:         "select * from test33 where a > 900",
+			Query2:         "select * from test33 where a > 90",
 			ExplainAssert1: mustNotUsePPAndIS,
 		}).Test)
 		t.Run("#21", (&FunctionalTest{
@@ -767,6 +862,12 @@ func TestFunctionalBasicQuery(t *testing.T) {
 			Query1:         "SELECT * FROM testx  JOIN test3 ON testx.a = test3.a",
 			Query2:         "SELECT * FROM testx  JOIN test33 ON testx.a = test33.a",
 			ExplainAssert1: mustNotUsePPAndISAndLookUP,
+		}).Test)
+		t.Run("#25", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "SELECT * FROM test7 WHERE a = 100",
+			Query2:         "SELECT * FROM test77 WHERE a = 100",
+			ExplainAssert1: mustUseISAndLookUP,
 		}).Test)
 	})
 
