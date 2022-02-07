@@ -867,7 +867,7 @@ func TestFunctionalBasicQuery(t *testing.T) {
 			Pool:           db,
 			Query1:         "SELECT * FROM test7 WHERE a = 100",
 			Query2:         "SELECT * FROM test77 WHERE a = 100",
-			ExplainAssert1: mustUseISAndLookUP,
+			ExplainAssert1: mustUsePointPlan,
 		}).Test)
 	})
 
