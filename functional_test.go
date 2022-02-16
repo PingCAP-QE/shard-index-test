@@ -415,6 +415,66 @@ func (ft *FunctionalTest) Test(t *testing.T) {
 	// t.Logf("> %s\n%s\n", ft.Query1, dumpResultSet(rs1)) // uncomment this for debug
 }
 
+func (ft *FunctionalTest) TestInTrans(t *testing.T) {
+	if !ft.Serial {
+		t.Parallel()
+	}
+
+	ctx := context.Background()
+	c, err := ft.Pool.Conn(ctx)
+	require.NoError(t, err)
+	defer sqlz.Release(c)
+
+	rows, err := c.QueryContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	rows.Close()
+
+	for _, explain := range []struct {
+		Query  string
+		Assert func(t *testing.T, rs *sqlz.ResultSet)
+	}{
+		{ft.Query1, ft.ExplainAssert1},
+		{ft.Query2, ft.ExplainAssert2},
+	} {
+		if explain.Assert != nil {
+			rows, err := c.QueryContext(ctx, "explain "+explain.Query)
+			require.NoError(t, err)
+			rs, err := sqlz.ReadFromRows(rows)
+			rows.Close()
+			require.NoError(t, err)
+			ft.ExplainAssert1(t, rs)
+		}
+	}
+
+	if len(ft.Query2) == 0 {
+		return
+	}
+
+	rows1, err := c.QueryContext(ctx, ft.Query1)
+	require.NoError(t, err)
+	rs1, err := sqlz.ReadFromRows(rows1)
+	rows1.Close()
+	require.NoError(t, err)
+
+	rows2, err := c.QueryContext(ctx, ft.Query2)
+	require.NoError(t, err)
+	rs2, err := sqlz.ReadFromRows(rows2)
+	rows1.Close()
+	require.NoError(t, err)
+
+	rows3, err := c.QueryContext(ctx, "COMMIT")
+	require.NoError(t, err)
+	rows3.Close()
+
+	opts := sqlz.DigestOptions{Sort: true}
+	if rs1.DataDigest(opts) != rs2.DataDigest(opts) {
+		t.Logf("results are different:\n> %s\n%s\n> %s\n%s\n",
+			ft.Query1, dumpResultSet(rs1), ft.Query2, dumpResultSet(rs2))
+		t.FailNow()
+	}
+	// t.Logf("> %s\n%s\n", ft.Query1, dumpResultSet(rs1)) // uncomment this for debug
+}
+
 func (ft *dmlTest) executeDML(t *testing.T) {
 	if !ft.Serial {
 		t.Parallel()
@@ -515,42 +575,84 @@ func TestFunctionalBasicQuery(t *testing.T) {
 			Query2:         "select * from test33 where a=100",
 			ExplainAssert1: mustUsePointPlan,
 		}).Test)
+		t.Run("#1-1", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "select * from test3 where a=100",
+			Query2:         "select * from test33 where a=100",
+			ExplainAssert1: mustUsePointPlan,
+		}).TestInTrans)
 		t.Run("#2", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test3 where a=100 and b = 100",
 			Query2:         "select * from test33 where a=100 and b = 100",
 			ExplainAssert1: mustUsePointPlan,
 		}).Test)
+		t.Run("#2-1", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "select * from test3 where a=100 and b = 100",
+			Query2:         "select * from test33 where a=100 and b = 100",
+			ExplainAssert1: mustUsePointPlan,
+		}).TestInTrans)
 		t.Run("#3", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test3 where a=100 and (b = 100 or b = 200)",
 			Query2:         "select * from test33 where a=100 and (b = 100 or b = 200)",
 			ExplainAssert1: mustUsePointPlan,
 		}).Test)
+		t.Run("#3-1", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "select * from test3 where a=100 and (b = 100 or b = 200)",
+			Query2:         "select * from test33 where a=100 and (b = 100 or b = 200)",
+			ExplainAssert1: mustUsePointPlan,
+		}).TestInTrans)
 		t.Run("#4", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test3 where (id>990 or id<10) and a = 100",
 			Query2:         "select * from test33 where (id>990 or id<10) and a = 100",
 			ExplainAssert1: mustUsePointPlan,
 		}).Test)
+		t.Run("#4-1", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "select * from test3 where (id>990 or id<10) and a = 100",
+			Query2:         "select * from test33 where (id>990 or id<10) and a = 100",
+			ExplainAssert1: mustUsePointPlan,
+		}).TestInTrans)
 		t.Run("#5", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test3 where a=100 or a = 200",
 			Query2:         "select * from test33 where a=100 or a = 200",
 			ExplainAssert1: mustUsePointPlan,
 		}).Test)
+		t.Run("#5-1", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "select * from test3 where a=100 or a = 200",
+			Query2:         "select * from test33 where a=100 or a = 200",
+			ExplainAssert1: mustUsePointPlan,
+		}).TestInTrans)
 		t.Run("#6", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test3 where (a=100 and b = 100) or a = 300",
 			Query2:         "select * from test33 where (a=100 and b = 100) or a = 300",
 			ExplainAssert1: mustUseBatchPointPlan,
 		}).Test)
+		t.Run("#6-1", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "select * from test3 where (a=100 and b = 100) or a = 300",
+			Query2:         "select * from test33 where (a=100 and b = 100) or a = 300",
+			ExplainAssert1: mustUseBatchPointPlan,
+		}).TestInTrans)
 		t.Run("#7", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test3 where ((a=100 and b = 100) or a = 200) or a = 300",
 			Query2:         "select * from test33 where ((a=100 and b = 100) or a = 200) or a = 300",
 			ExplainAssert1: mustUseBatchPointPlan,
 		}).Test)
+		t.Run("#7-1", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "select * from test3 where ((a=100 and b = 100) or a = 200) or a = 300",
+			Query2:         "select * from test33 where ((a=100 and b = 100) or a = 200) or a = 300",
+			ExplainAssert1: mustUseBatchPointPlan,
+		}).TestInTrans)
 		t.Run("#8", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test4 where a=100",
@@ -575,6 +677,12 @@ func TestFunctionalBasicQuery(t *testing.T) {
 			Query2:         "select * from test55 where a=100 and b = 100",
 			ExplainAssert1: mustUsePointPlan,
 		}).Test)
+		t.Run("#11-1", (&FunctionalTest{
+			Pool:           db,
+			Query1:         "select * from test5 where a=100 and b = 100",
+			Query2:         "select * from test55 where a=100 and b = 100",
+			ExplainAssert1: mustUsePointPlan,
+		}).TestInTrans)
 		t.Run("#12", (&FunctionalTest{
 			Pool:           db,
 			Query1:         "select * from test5 where (a=100 and b = 100) or (a=200 and b = 200)",
