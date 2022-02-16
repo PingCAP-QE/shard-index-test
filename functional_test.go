@@ -155,6 +155,66 @@ func SetupPrepareDB(t *testing.T, schema string, params map[string]string) *sql.
 	return db
 }
 
+func SetupUnionScanDB(t *testing.T, schema string, params map[string]string) *sql.DB {
+	func() {
+		db, err := sql.Open("mysql", dsn("", nil))
+		require.NoError(t, err)
+		defer db.Close()
+		_, err = db.Exec(fmt.Sprintf("create database if not exists `%s`", schema))
+		require.NoError(t, err)
+	}()
+	db, err := sql.Open("mysql", dsn(schema, params))
+	require.NoError(t, err)
+	for _, ddl := range []string{
+		"drop table if exists t, tt",
+		"create table t ( c_int int, c_str int, c_datetime datetime, c_timestamp timestamp, " +
+			"c_double double, c_decimal decimal(12, 6), c_enum enum('blue','green','red','yellow'," +
+			"'white','orange','purple'), c_set set ('blue','green','red','yellow','white','orange'," +
+			"'purple')  , key(c_int) , unique key(c_str) , key(c_decimal)   , key(c_enum) , key(c_set) )",
+
+		"create table tt ( c_int int, c_str int, c_datetime datetime, c_timestamp timestamp, " +
+			"c_double double, c_decimal decimal(12, 6), c_enum enum('blue','green','red','yellow'," +
+			"'white','orange','purple'), c_set set ('blue','green','red','yellow','white','orange'," +
+			"'purple')  , key(c_int) , unique key((tidb_shard(c_str)), c_str) , key(c_decimal)   , key(c_enum) , key(c_set) )",
+	} {
+		_, err := db.Exec(ddl)
+		require.NoError(t, err, "exec "+ddl)
+	}
+
+	for _, InsertSQL := range []string{
+		"insert into t values " +
+			"(1, 1, '2020-03-05 03:51:45', '2020-03-21 01:54:15', 71.474950, 9.756, 'blue', 'yellow'), " +
+			"(2, 2, '2020-01-13 21:40:58', '2020-05-20 23:53:56', 53.721128, 5.346, 'yellow', 'blue'), " +
+			"(3, 3, '2020-01-06 02:21:04', '2020-01-18 21:48:32', 72.644380, 9.363, 'purple', 'purple'), " +
+			"(4, 4, '2020-05-07 17:06:36', '2020-04-14 13:52:54', 17.619027, 3.507, 'green', 'yellow'), " +
+			"(5, 5, '2020-01-28 00:33:07', '2020-04-07 05:36:03', 27.682259, 9.719, 'blue', 'white')",
+		"insert into t values " +
+			"(6, 6, '2020-01-03 21:06:30', '2020-03-13 06:16:25', 41.538078, 8.308, 'purple', 'white'), " +
+			"(7, 7, '2020-05-21 02:10:23', '2020-04-04 12:44:40', 89.818130, 9.725, 'yellow', 'red'), " +
+			"(8, 8, '2020-04-10 23:58:34', '2020-01-23 16:04:05', 73.649215, 1.160, 'blue', 'white'), " +
+			"(9, 9, '2020-02-16 12:30:20', '2020-03-07 09:59:48', 75.336312, 4.636, 'red', 'white'), " +
+			"(10, 10, '2020-05-23 00:32:07', '2020-02-27 22:45:11', 4.267077, 0.077, 'red', 'yellow')",
+
+		"insert into tt values " +
+			"(1, 1, '2020-03-05 03:51:45', '2020-03-21 01:54:15', 71.474950, 9.756, 'blue', 'yellow'), " +
+			"(2, 2, '2020-01-13 21:40:58', '2020-05-20 23:53:56', 53.721128, 5.346, 'yellow', 'blue'), " +
+			"(3, 3, '2020-01-06 02:21:04', '2020-01-18 21:48:32', 72.644380, 9.363, 'purple', 'purple'), " +
+			"(4, 4, '2020-05-07 17:06:36', '2020-04-14 13:52:54', 17.619027, 3.507, 'green', 'yellow'), " +
+			"(5, 5, '2020-01-28 00:33:07', '2020-04-07 05:36:03', 27.682259, 9.719, 'blue', 'white')",
+		"insert into tt values " +
+			"(6, 6, '2020-01-03 21:06:30', '2020-03-13 06:16:25', 41.538078, 8.308, 'purple', 'white'), " +
+			"(7, 7, '2020-05-21 02:10:23', '2020-04-04 12:44:40', 89.818130, 9.725, 'yellow', 'red'), " +
+			"(8, 8, '2020-04-10 23:58:34', '2020-01-23 16:04:05', 73.649215, 1.160, 'blue', 'white'), " +
+			"(9, 9, '2020-02-16 12:30:20', '2020-03-07 09:59:48', 75.336312, 4.636, 'red', 'white'), " +
+			"(10, 10, '2020-05-23 00:32:07', '2020-02-27 22:45:11', 4.267077, 0.077, 'red', 'yellow')",
+	} {
+		_, err := db.Exec(InsertSQL)
+		require.NoError(t, err, "exec "+InsertSQL)
+	}
+
+	return db
+}
+
 func hasPointPlan(rs *sqlz.ResultSet) bool {
 	for i := 0; i < rs.NRows(); i++ {
 		raw, _ := rs.RawValue(i, 0)
@@ -209,6 +269,26 @@ func hasSort(rs *sqlz.ResultSet) bool {
 	for i := 0; i < rs.NRows(); i++ {
 		raw, _ := rs.RawValue(i, 0)
 		if strings.Contains(string(raw), "Sort") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTidbShard(rs *sqlz.ResultSet) bool {
+	for i := 0; i < rs.NRows(); i++ {
+		raw, _ := rs.RawValue(i, 4)
+		if strings.Contains(string(raw), "tidb_shard") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnionScan(rs *sqlz.ResultSet) bool {
+	for i := 0; i < rs.NRows(); i++ {
+		raw, _ := rs.RawValue(i, 0)
+		if strings.Contains(string(raw), "UnionScan") {
 			return true
 		}
 	}
@@ -334,6 +414,17 @@ func mustUseShardIndexAndPP(t *testing.T, rs *sqlz.ResultSet) {
 			}
 		}
 
+	}
+}
+
+func mustCotainTidbShardAndUnionScan(t *testing.T, rs *sqlz.ResultSet, SkipShard bool) {
+	if !hasUnionScan(rs) {
+		t.Log("must use UnionScan, but got:\n" + dumpResultSet(rs))
+		t.FailNow()
+	}
+	if !SkipShard && !hasTidbShard(rs) {
+		t.Log("must contain tidb_shard, but got:\n" + dumpResultSet(rs))
+		t.FailNow()
 	}
 }
 
@@ -561,6 +652,90 @@ func (ft *prepareTest) executePrepare(t *testing.T) {
 	if rs1.DataDigest(opts) != rs2.DataDigest(opts) {
 		t.Logf("results are different:\n> %s\n> %s\n",
 			dumpResultSet(rs1), dumpResultSet(rs2))
+	}
+}
+
+type unionScanTest struct {
+	Pool sqlz.ConnPool
+}
+
+func (ft *unionScanTest) executeUnionScan(t *testing.T) {
+	ctx := context.Background()
+	c, err := ft.Pool.Conn(ctx)
+	require.NoError(t, err)
+	defer sqlz.Release(c)
+
+	queries1 := []string{
+		"begin",
+		"update tt set c_datetime = '2020-05-30 08:23:57' where (c_int, c_str) in ((4, 4)) order by c_int, c_str, c_decimal, c_double",
+		"update tt set c_decimal = 6.133 where (c_int, c_str) = (1, 1) order by c_int, c_str, c_decimal, c_double limit 3",
+		"delete from tt where (c_int, c_str) in ((3, 3)) order by c_int, c_str, c_decimal, c_double limit 2",
+		"select c_int, c_str, c_double, c_decimal, c_datetime, c_timestamp, c_enum, c_set from tt where c_datetime = '2020-04-19 06:49:23' order by c_int, c_str, c_decimal, c_double",
+		"update tt set c_str = c_str where c_int in (4) and (c_int, c_str) in ((7, 7)) order by c_int, c_str, c_decimal, c_double limit 1",
+		"delete from tt where (c_int, c_str) in ((10, 10), (3, 3), (10, 11), (8, 8), (5, 9)) order by c_int, c_str, c_decimal, c_double",
+		"insert into tt (c_int, c_str, c_timestamp, c_decimal, c_enum, c_set) values (11, 11, '2020-01-24 12:44:16', 8.716, 'blue', 'yellow'), (10, 12, '2020-06-20 20:53:54', 1.868, 'blue', 'orange')",
+		"update tt set c_decimal = c_decimal - 4.730 where c_enum between 'purple' and 'white' or (c_int, c_str) in ((1, 2)) and c_datetime is not null order by c_int, c_str, c_decimal, c_double limit 2",
+		"delete from tt where c_datetime < '2020-02-08 09:39:23' order by c_int, c_str, c_decimal, c_double limit 2",
+	}
+	CheckSQL1 := "select * from tt where c_str = 4 or c_str >= 6 order by c_int, c_str, c_decimal, c_double"
+
+	queries2 := []string{
+		"begin",
+		"update t set c_datetime = '2020-05-30 08:23:57' where (c_int, c_str) in ((4, 4)) order by c_int, c_str, c_decimal, c_double",
+		"update t set c_decimal = 6.133 where (c_int, c_str) = (1, 1) order by c_int, c_str, c_decimal, c_double limit 3",
+		"delete from t where (c_int, c_str) in ((3, 3)) order by c_int, c_str, c_decimal, c_double limit 2",
+		"select c_int, c_str, c_double, c_decimal, c_datetime, c_timestamp, c_enum, c_set from t where c_datetime = '2020-04-19 06:49:23' order by c_int, c_str, c_decimal, c_double",
+		"update t set c_str = c_str where c_int in (4) and (c_int, c_str) in ((7, 7)) order by c_int, c_str, c_decimal, c_double limit 1",
+		"delete from t where (c_int, c_str) in ((10, 10), (3, 3), (10, 11), (8, 8), (5, 9)) order by c_int, c_str, c_decimal, c_double",
+		"insert into t (c_int, c_str, c_timestamp, c_decimal, c_enum, c_set) values (11, 11, '2020-01-24 12:44:16', 8.716, 'blue', 'yellow'), (10, 12, '2020-06-20 20:53:54', 1.868, 'blue', 'orange')",
+		"update t set c_decimal = c_decimal - 4.730 where c_enum between 'purple' and 'white' or (c_int, c_str) in ((1, 2)) and c_datetime is not null order by c_int, c_str, c_decimal, c_double limit 2",
+		"delete from t where c_datetime < '2020-02-08 09:39:23' order by c_int, c_str, c_decimal, c_double limit 2",
+	}
+	checkSQL2 := "select * from t where c_str = 4 or c_str >= 6 order by c_int, c_str, c_decimal, c_double"
+
+	// check explain CheckSQL1
+	executeBatchSql(t, c, queries1, ctx, false)
+	rows1Check, err := c.QueryContext(ctx, "explain "+CheckSQL1)
+	require.NoError(t, err)
+	rs1Check, err := sqlz.ReadFromRows(rows1Check)
+	rows1Check.Close()
+	require.NoError(t, err)
+	mustCotainTidbShardAndUnionScan(t, rs1Check, false)
+
+	// get select result for CheckSQL1
+	row1ResCheck, err := c.QueryContext(ctx, CheckSQL1)
+	require.NoError(t, err)
+	rs1ResCheck, err := sqlz.ReadFromRows(row1ResCheck)
+	require.NoError(t, err)
+	row1ResCheck.Close()
+
+	_, err2 := ft.Pool.(*sql.DB).Exec("commit")
+	require.NoError(t, err2)
+
+	// check explain CheckSQL2
+	executeBatchSql(t, c, queries2, ctx, false)
+	rows2Check, err := c.QueryContext(ctx, "explain "+checkSQL2)
+	require.NoError(t, err)
+	rs2Check, err := sqlz.ReadFromRows(rows2Check)
+	rows2Check.Close()
+	require.NoError(t, err)
+	mustCotainTidbShardAndUnionScan(t, rs2Check, true)
+
+	// get select result for CheckSQL1
+	row2ResCheck, err := c.QueryContext(ctx, checkSQL2)
+	require.NoError(t, err)
+	rs2ResCheck, err := sqlz.ReadFromRows(row2ResCheck)
+	require.NoError(t, err)
+	row2ResCheck.Close()
+
+	_, err3 := ft.Pool.(*sql.DB).Exec("commit")
+	require.NoError(t, err3)
+
+	// compare result
+	opts := sqlz.DigestOptions{Sort: true}
+	if rs1ResCheck.DataDigest(opts) != rs2ResCheck.DataDigest(opts) {
+		t.Logf("results are different:\n> %s\n> %s\n",
+			dumpResultSet(rs2ResCheck), dumpResultSet(rs2ResCheck))
 	}
 }
 
@@ -1031,5 +1206,16 @@ func TestPrepareShardIndex(t *testing.T) {
 		t.Run("#1", (&prepareTest{
 			Pool: db,
 		}).executePrepare)
+	})
+}
+
+func TestUnionScanPlan(t *testing.T) {
+	// t.Fatalf("implement me")
+	schema := "shard_index_union_scan"
+	db := SetupUnionScanDB(t, schema, nil)
+	t.Run("ShardIndexUnionScan", func(t *testing.T) {
+		t.Run("#1", (&unionScanTest{
+			Pool: db,
+		}).executeUnionScan)
 	})
 }
